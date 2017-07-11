@@ -40,7 +40,7 @@ bot.on('conversationUpdate', message => {
 });
 
 var googleMapsClient = require('@google/maps').createClient({
-    key: 'AIzaSyBkM-LkYyX4yq9IH0eoHzmRqsGnvFAIotw',
+    key: process.env.GOOGLE_MAP_KEY,
     Promise: Promise
 });
 
