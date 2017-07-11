@@ -1,5 +1,8 @@
 const builder = require('botbuilder');
 const express = require('express');
+const request = require('request');
+const querystring = require('querystring');
+
 const app = express();
 
 //=========================================================
@@ -36,51 +39,152 @@ bot.on('conversationUpdate', message => {
     }
 });
 
-const firstChoices = {
-    "いいランチのお店": {
-        value: 'lunch',
-        title: '行列のできるタイ料理屋',
-        subtitle: 'ランチセットがコスパ良し',
-        text: '品川駅から徒歩10分くらいのところにあるタイ料理屋。トムヤムクンヌードルがおすすめ。',
-        imageURL: 'https://sakkuru.github.io/simple-bot-nodejs/images/tom.jpg',
-        button: '予約する',
-        url: 'http://example.com/'
-    },
-    "飲めるところ": {
-        value: 'drink',
-        title: '落ち着いた雰囲気の個室居酒屋',
-        subtitle: 'なんでも美味しいが、特に焼き鳥がおすすめ',
-        text: '品川駅から徒歩5分くらいの路地裏にひっそりある。',
-        imageURL: 'https://sakkuru.github.io/simple-bot-nodejs/images/yaki.jpg',
-        button: '予約する',
-        url: 'http://example.com/'
-    }
-};
+var googleMapsClient = require('@google/maps').createClient({
+    key: 'AIzaSyBkM-LkYyX4yq9IH0eoHzmRqsGnvFAIotw',
+    Promise: Promise
+});
 
-bot.dialog('/firstQuestion', [
+const LuisEndpoint = 'https://westus.api.cognitive.microsoft.com/luis/v2.0/apps/955554a2-3512-4943-81b9-9cf2fc88919a?subscription-key=898f1043f83542a0ac3a5b8e5ecde6ad&verbose=true&timezoneOffset=0';
+
+const callLUIS = (text) => {
+    return new Promise((resolve, reject) => {
+        var params = { q: text };
+
+        request({ url: LuisEndpoint, qs: params }, function(err, response, body) {
+            if (err) { console.log(err); return; }
+            console.log(response.body);
+            resolve(JSON.parse(response.body));
+        });
+    });
+}
+
+bot.dialog('/getText', [
     (session, results, next) => {
-        builder.Prompts.choice(session, "何をお探しですか。", firstChoices, { listStyle: 3 });
+        builder.Prompts.text(session, 'どうなさいますか。');
     },
     (session, results, next) => {
-        session.send('%sですね。', results.response.entity);
-        session.send('こちらはいかがでしょうか。');
+        const text = results.response;
+        console.log(results.response)
+        callLUIS(text).then(res => {
+            const intent = res.topScoringIntent.intent;
 
-        const choice = firstChoices[results.response.entity];
+            let from = 'nowLocation';
+            let to;
+            let lastTrain = false;
+            let firstTrain = false;
 
-        const card = new builder.HeroCard(session)
-            .title(choice.title)
-            .subtitle(choice.subtitle)
-            .text(choice.text)
-            .images([
-                builder.CardImage.create(session, choice.imageURL)
-            ])
-            .buttons([
-                builder.CardAction.openUrl(session, choice.url, choice.button)
-            ]);
+            res.entities.forEach(e => {
+                console.log(e.type)
+                if (e.type === 'to') {
+                    to = e.entity;
+                } else if (e.type === 'from') {
+                    from = e.entity;
+                } else if (e.type === 'lastTrain') {
+                    lastTrain = true;
+                }
+            });
 
-        const msg = new builder.Message(session).addAttachment(card);
-        session.send(msg);
-        session.beginDialog('/endDialog');
+            if (intent == 'goToSomewhere' && !to) {
+                throw new Error('no destination');
+            } else if (intent === 'backToHome' && !to) {
+                to = 'home';
+            }
+
+            let title = '';
+            if (intent === 'goToSomewhere') {
+                title = `${from}から${to}`;
+            } else if (intent === 'backToHome') {
+                if (lastTrain) {
+                    title = `${from}からの終電`;
+                }
+                title = `${from}からの帰り道`;
+            }
+
+            session.send(title + 'ですね。');
+
+            googleMapsClient.directions({
+                    origin: from,
+                    destination: to,
+                    mode: 'walking',
+                    // arrival_time: '',
+                    // 'departure_time': ''
+                }).asPromise()
+                .then((response) => {
+                    console.log(response)
+                    if (response.json.routes.length > 0) {
+                        console.dir(response.json);
+                        // session.send(JSON.stringify(response.json.routes))
+                        const polyline_data = response.json.routes[0].overview_polyline.points;
+
+                        const route = response.json.routes[0];
+
+                        let imageURL = `https://maps.googleapis.com/maps/api/staticmap`;
+                        const imageURLParams = {
+                            // center: '東京',
+                            // zoom: 13,
+                            size: '400x400',
+                            markers: `${from}|${to}`,
+                            weight: 3,
+                            color: 'orange',
+                            path: `color:red|enc:${polyline_data}`,
+                            key: 'AIzaSyCUT6rrf8FkQp59wQ1IYNrCGhyb29nhZKY'
+                        };
+                        imageURL += '?' + querystring.stringify(imageURLParams);
+
+                        console.log(imageURL)
+
+                        let url = 'https://www.google.com/maps/dir/?';
+                        const urlParams = {
+                            api: 1,
+                            origin: from,
+                            destination: to,
+                            // travelmode: 'transit'
+                        };
+
+                        url += '?' + querystring.stringify(urlParams);
+
+                        console.log(url)
+
+                        let subtitle = '';
+                        let text = '';
+
+                        if (route.legs) {
+                            const distance = route.legs[0].distance.text;
+                            const duration = route.legs[0].duration.text;
+                            console.log(route.legs[0].distance.text)
+                            console.log(route.legs[0].duration.text)
+                            subtitle = distance + " | " + duration;
+                        }
+
+                        text = route.summary;
+
+                        const card = new builder.HeroCard(session)
+                            .title(`${from} 〜 ${to}`)
+                            .subtitle(subtitle)
+                            .text(text)
+                            .images([
+                                builder.CardImage.create(session, imageURL)
+                            ])
+                            .buttons([
+                                builder.CardAction.openUrl(session, url, '地図を開く')
+                            ]);
+
+                        const cardMsg = new builder.Message(session).addAttachment(card);
+                        session.send(cardMsg);
+                    } else {
+                        session.send("申し訳ありません。ルートを探すことができませんでした。");
+                        session.beginDialog('/getText');
+                    }
+                })
+                .catch((err) => {
+                    console.log(err);
+                });
+
+        }).catch(error => {
+            console.log(error);
+            session.send('申し訳ありません。もう一度入力してください。');
+            session.beginDialog('/getText');
+        });
     }
 ]);
 
@@ -96,7 +200,7 @@ bot.dialog('/endDialog', [
 
         } else {
             session.send('お役に立てず申し訳ありません。');
-            session.beginDialog('/firstQuestion');
+            session.beginDialog('/getText');
         }
     }
 ]);
@@ -104,6 +208,6 @@ bot.dialog('/endDialog', [
 bot.dialog('/', [
     session => {
         session.send("ボットが自動でお答えします。");
-        session.beginDialog('/firstQuestion');
+        session.beginDialog('/getText');
     }
 ]);
