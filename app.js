@@ -33,7 +33,10 @@ const LuisEndpoint = 'https://westus.api.cognitive.microsoft.com/luis/v2.0/apps/
 
 const firstChoices = {
     "家から会社まで": {
-        value: 'fromHomeToWork'
+        value: 'wayToWorkFromHome'
+    },
+    "現在地から会社まで": {
+        value: 'wayToWorkFromHere'
     },
     "家までの終電": {
         value: 'lastTrain'
@@ -42,6 +45,10 @@ const firstChoices = {
         value: 'others'
     },
 };
+
+const homeAddress = 'kawasaki';
+const workAddress = 'tokyo';
+
 //=========================================================
 // Bots Dialogs
 //=========================================================
@@ -72,6 +79,14 @@ const callLUIS = (text) => {
 bot.dialog('/getLastTrain', [
     session => {
         session.send('自宅までの終電を検索しています。');
+        showDirection(session, homeAddress, workAddress);
+    }
+]);
+
+bot.dialog('/getWayToWorkFromHome', [
+    session => {
+        session.send('自宅から会社までのルートを検索します。');
+        showDirection(session, homeAddress, workAddress);
     }
 ]);
 
@@ -80,12 +95,17 @@ const getDirection = (origin, destination, option) => {
         googleMapsClient.directions({
                 origin: origin,
                 destination: destination,
-                mode: 'walking',
+                // mode: 'walking',
+                mode: 'driving',
+                transit_mode: 'subway',
                 // arrival_time: '',
                 // 'departure_time': ''
+                language: 'ja',
             }).asPromise()
             .then((response) => {
                 resolve(response)
+            }).catch(error => {
+                console.log(error)
             });
     })
 }
@@ -108,12 +128,14 @@ const getStaticMapImageURL = (from, to, route) => {
 }
 
 const getGoogleMapURL = (from, to) => {
-    let url = 'https://www.google.com/maps/dir/?';
+    let url = 'https://www.google.com/maps/dir/';
     const urlParams = {
         api: 1,
         origin: from,
         destination: to,
-        // travelmode: 'transit'
+        travelmode: 'transit',
+        departure_time: 111111111
+            // travelmode: 'transit'
     };
     url += '?' + querystring.stringify(urlParams);
     return url;
@@ -121,23 +143,41 @@ const getGoogleMapURL = (from, to) => {
 
 const showDirection = (session, from, to) => {
     getDirection(from, to).then((response) => {
-        console.log(response)
+        console.log(response.requestUrl)
+        console.log('=====================================')
         if (response.json.routes.length > 0) {
-            console.dir(response.json);
+            // console.dir(response.json);
+            console.log('=====================================')
             const route = response.json.routes[0];
+            console.log('route')
+            console.log(route)
+            console.log('=====================================')
             const imageURL = getStaticMapImageURL(from, to, route);
             const mapURL = getGoogleMapURL(from, to);
+            console.log('map', mapURL)
+
+            console.log('legs')
+            console.log(route.legs[0])
+            console.log('=====================================')
 
             // prepare card text
             let subtitle = '';
             let text = '';
 
             if (route.legs) {
-                const distance = route.legs[0].distance.text;
-                const duration = route.legs[0].duration.text;
+                const leg = route.legs[0];
+                if (leg.arrival_time && leg.departure_time) {
+                    text += '出発: ' + leg.departure_time.text + " ~ 到着: " + leg.arrival_time.text;
+                }
+                const distance = leg.distance.text;
+                const duration = leg.duration.text;
                 subtitle = distance + " | " + duration;
             }
-            text = route.summary;
+
+            if (route.fare) {
+                subtitle += " | " + route.fare.text
+            }
+
 
             // create card object
             const card = new builder.HeroCard(session)
@@ -218,8 +258,11 @@ bot.dialog('/firstChoice', [
             case 'lastTrain':
                 session.beginDialog('/getLastTrain');
                 break;
-            case 'fromHomeToWork':
-                session.beginDialog('/getDirection');
+            case 'wayToWorkFromHome':
+                session.beginDialog('/getWayToWorkFromHome');
+                break;
+            case 'wayToWork':
+                session.beginDialog('/getWayToWorkFromHere');
                 break;
             case 'others':
                 session.beginDialog('/getSentence');
