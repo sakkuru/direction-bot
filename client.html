@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title></title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://code.jquery.com/jquery-3.2.0.min.js" integrity="sha256-JAW99MJVpJBGcbzEuXk4Az05s/XyDdBomFqNlM3ic+I=" crossorigin="anonymous"></script>
+    <!--<link href="css/style.css" rel="stylesheet">-->
+</head>
+
+<body>
+
+    <div id='conversations'>
+    </div>
+
+    <form>
+        <input type="text" name="inputText" id="inputText" value="">
+        <input type="submit" name="" value="Submit">
+    </form>
+    <script>
+        const secretKey = '1tWFIpR01Hg.cwA.o40.8KS1OBeeWXCnMmqp7NQtLend4P9Y9dWnc02D4mR_4_k';
+        let token = '';
+        const directlineEndpoint = 'https://directline.botframework.com';
+        const getTokenPath = '/v3/directline/conversations/';
+        let getConversationsPath = '/{id}/messages';
+        let postMessagePath = '/v3/directline/conversations/{id}/activities';
+        let conversationId = null;
+        let socket;
+
+        const addMessageObject = (obj) => {
+            $('div#conversations').append(obj);
+            $('div#conversations').animate({
+                scrollTop: $('div#conversations')[0].scrollHeight
+            }, 'fast');
+        }
+
+        const addListner = socket => {
+            // Listen for messages
+            socket.addEventListener('message', event => {
+                console.log(event.data)
+                const data = JSON.parse(event.data).activities[0];
+
+                if (data.text) {
+                    let message = data.text;
+                    addMessageObject('<p>' + message);
+                }
+                if (data.attachments) {
+                    if (data.attachments[0].contentType === 'application/vnd.microsoft.card.hero') {
+                        const content = data.attachments[0].content;
+
+                        if (content.title) {
+                            let $card = $('<div>');
+                            $card.append('<h2>' + content.title);
+                            $card.append('<h3>' + content.subtitle);
+                            const $img = $('<img>').attr("src", content.images[0].url);
+                            $card.append($img);
+                            addMessageObject($card);
+                        } else if (content.buttons) {
+                            // get button list
+                            content.buttons.forEach(b => {
+                                let $button = $('<button>').val(b.value).text(b.title);
+                                addMessageObject($button);
+                            })
+                        }
+                    }
+                } else {
+                    // // regular message
+                    // if (data.from.id != 'user1') {
+                    //     console.log('received message', message);
+                    //     $('div#conversations').append('<p>' + message);
+                    // }
+
+                }
+            });
+        }
+
+        const getTokenAndConversationID = () => {
+            return new Promise((resolve, reject) => {
+                const success = res => {
+                    conversationId = res.conversationId;
+                    token = res.token;
+                    postMessagePath = postMessagePath.replace(/{id}/g, conversationId);
+                    getConversationsPath = getConversationsPath.replace(/{id}/g, conversationId);
+
+                    socket = new WebSocket(res.streamUrl);
+                    addListner(socket);
+
+                    resolve(conversationId);
+                }
+
+                $.ajax({
+                    type: "POST",
+                    url: directlineEndpoint + getTokenPath,
+                    headers: {
+                        "Authorization": 'Bearer ' + secretKey
+                    },
+                    success: success
+                });
+            });
+        }
+        const sendMessage = (text, option = {}) => {
+            return new Promise((resolve, reject) => {
+                const data = {
+                    "type": option.type || "message",
+                    "from": {
+                        "id": "user1"
+                    },
+                    "text": text
+                }
+
+                $.ajax({
+                    type: "POST",
+                    url: directlineEndpoint + postMessagePath,
+                    headers: {
+                        "Authorization": 'Bearer ' + secretKey,
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify(data),
+                    success: () => {
+                        console.log('sent message')
+                        resolve();
+                    }
+                });
+            });
+
+        }
+
+        const getPosition = () => {
+            return new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(p => {
+                    console.log(p)
+                    const position = {
+                        latitude: p.coords.latitude,
+                        longitude: p.coords.longitude
+                    }
+                    resolve(position);
+                })
+            })
+        }
+        $('form').submit(ev => {
+            ev.preventDefault();
+            const text = $('#inputText').val();
+            console.log(text);
+            sendMessage(text).then(() => {
+                $('#inputText').val('');
+            });
+
+        });
+
+        $(document).on("click", "button", ev => {
+            let text = $(ev.target).val();
+            sendMessage(text);
+            getPosition().then(position => {
+                console.log('send position')
+                sendMessage(JSON.stringify(position), {
+                    type: 'position'
+                });
+            })
+        });
+
+        getTokenAndConversationID().then(() => {});
+    </script>
+</body>
+
+</html>
