@@ -64,6 +64,11 @@ bot.on('conversationUpdate', message => {
     }
 });
 
+bot.on('position', message => {
+    console.log('get position')
+    console.log(message)
+});
+
 const callLUIS = (text) => {
     return new Promise((resolve, reject) => {
         var params = { q: text };
@@ -177,7 +182,6 @@ const showDirection = (session, from, to) => {
             if (route.fare) {
                 subtitle += " | " + route.fare.text
             }
-
 
             // create card object
             const card = new builder.HeroCard(session)
