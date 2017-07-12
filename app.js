@@ -6,7 +6,7 @@ const querystring = require('querystring');
 const app = express();
 
 //=========================================================
-// Bot Setup
+// Setup
 //=========================================================
 
 const port = process.env.port || process.env.PORT || 3000;
@@ -24,6 +24,24 @@ const bot = new builder.UniversalBot(connector);
 
 app.post('/api/messages', connector.listen());
 
+var googleMapsClient = require('@google/maps').createClient({
+    key: process.env.GOOGLE_MAP_KEY,
+    Promise: Promise
+});
+
+const LuisEndpoint = 'https://westus.api.cognitive.microsoft.com/luis/v2.0/apps/955554a2-3512-4943-81b9-9cf2fc88919a?subscription-key=898f1043f83542a0ac3a5b8e5ecde6ad&verbose=true&timezoneOffset=0';
+
+const firstChoices = {
+    "家から会社まで": {
+        value: 'fromHomeToWork'
+    },
+    "家までの終電": {
+        value: 'lastTrain'
+    },
+    "それ以外のルート検索": {
+        value: 'others'
+    },
+};
 //=========================================================
 // Bots Dialogs
 //=========================================================
@@ -39,13 +57,6 @@ bot.on('conversationUpdate', message => {
     }
 });
 
-var googleMapsClient = require('@google/maps').createClient({
-    key: process.env.GOOGLE_MAP_KEY,
-    Promise: Promise
-});
-
-const LuisEndpoint = 'https://westus.api.cognitive.microsoft.com/luis/v2.0/apps/955554a2-3512-4943-81b9-9cf2fc88919a?subscription-key=898f1043f83542a0ac3a5b8e5ecde6ad&verbose=true&timezoneOffset=0';
-
 const callLUIS = (text) => {
     return new Promise((resolve, reject) => {
         var params = { q: text };
@@ -58,13 +69,103 @@ const callLUIS = (text) => {
     });
 }
 
-bot.dialog('/getText', [
+bot.dialog('/getLastTrain', [
+    session => {
+        session.send('自宅までの終電を検索しています。');
+    }
+]);
+
+const getDirection = (origin, destination, option) => {
+    return new Promise((resolve, reject) => {
+        googleMapsClient.directions({
+                origin: origin,
+                destination: destination,
+                mode: 'walking',
+                // arrival_time: '',
+                // 'departure_time': ''
+            }).asPromise()
+            .then((response) => {
+                resolve(response)
+            });
+    })
+}
+
+const getStaticMapImageURL = (from, to, route) => {
+    const polyline_data = route.overview_polyline.points;
+    let imageURL = `https://maps.googleapis.com/maps/api/staticmap`;
+    const imageURLParams = {
+        // center: '東京',
+        // zoom: 13,
+        size: '400x400',
+        markers: `${from}|${to}`,
+        weight: 3,
+        color: 'orange',
+        path: `color:red|enc:${polyline_data}`,
+        key: 'AIzaSyCUT6rrf8FkQp59wQ1IYNrCGhyb29nhZKY'
+    };
+    imageURL += '?' + querystring.stringify(imageURLParams);
+    return imageURL
+}
+
+const getGoogleMapURL = (from, to) => {
+    let url = 'https://www.google.com/maps/dir/?';
+    const urlParams = {
+        api: 1,
+        origin: from,
+        destination: to,
+        // travelmode: 'transit'
+    };
+    url += '?' + querystring.stringify(urlParams);
+    return url;
+}
+
+const showDirection = (session, from, to) => {
+    getDirection(from, to).then((response) => {
+        console.log(response)
+        if (response.json.routes.length > 0) {
+            console.dir(response.json);
+            const route = response.json.routes[0];
+            const imageURL = getStaticMapImageURL(from, to, route);
+            const mapURL = getGoogleMapURL(from, to);
+
+            // prepare card text
+            let subtitle = '';
+            let text = '';
+
+            if (route.legs) {
+                const distance = route.legs[0].distance.text;
+                const duration = route.legs[0].duration.text;
+                subtitle = distance + " | " + duration;
+            }
+            text = route.summary;
+
+            // create card object
+            const card = new builder.HeroCard(session)
+                .title(`${from} 〜 ${to}`)
+                .subtitle(subtitle)
+                .text(text)
+                .images([
+                    builder.CardImage.create(session, imageURL)
+                ])
+                .buttons([
+                    builder.CardAction.openUrl(session, mapURL, '地図を開く')
+                ]);
+
+            const cardMsg = new builder.Message(session).addAttachment(card);
+            session.send(cardMsg);
+        } else {
+            session.send("申し訳ありません。ルートを探すことができませんでした。");
+            session.beginDialog('/getText');
+        }
+    })
+}
+
+bot.dialog('/getSentence', [
     (session, results, next) => {
-        builder.Prompts.text(session, 'どうなさいますか。');
+        builder.Prompts.text(session, "入力してね。");
     },
     (session, results, next) => {
         const text = results.response;
-        console.log(results.response)
         callLUIS(text).then(res => {
             const intent = res.topScoringIntent.intent;
 
@@ -74,7 +175,6 @@ bot.dialog('/getText', [
             let firstTrain = false;
 
             res.entities.forEach(e => {
-                console.log(e.type)
                 if (e.type === 'to') {
                     to = e.entity;
                 } else if (e.type === 'from') {
@@ -102,89 +202,32 @@ bot.dialog('/getText', [
 
             session.send(title + 'ですね。');
 
-            googleMapsClient.directions({
-                    origin: from,
-                    destination: to,
-                    mode: 'walking',
-                    // arrival_time: '',
-                    // 'departure_time': ''
-                }).asPromise()
-                .then((response) => {
-                    console.log(response)
-                    if (response.json.routes.length > 0) {
-                        console.dir(response.json);
-                        // session.send(JSON.stringify(response.json.routes))
-                        const polyline_data = response.json.routes[0].overview_polyline.points;
+            showDirection(session, from, to);
+        })
+    }
+])
 
-                        const route = response.json.routes[0];
-
-                        let imageURL = `https://maps.googleapis.com/maps/api/staticmap`;
-                        const imageURLParams = {
-                            // center: '東京',
-                            // zoom: 13,
-                            size: '400x400',
-                            markers: `${from}|${to}`,
-                            weight: 3,
-                            color: 'orange',
-                            path: `color:red|enc:${polyline_data}`,
-                            key: 'AIzaSyCUT6rrf8FkQp59wQ1IYNrCGhyb29nhZKY'
-                        };
-                        imageURL += '?' + querystring.stringify(imageURLParams);
-
-                        console.log(imageURL)
-
-                        let url = 'https://www.google.com/maps/dir/?';
-                        const urlParams = {
-                            api: 1,
-                            origin: from,
-                            destination: to,
-                            // travelmode: 'transit'
-                        };
-
-                        url += '?' + querystring.stringify(urlParams);
-
-                        console.log(url)
-
-                        let subtitle = '';
-                        let text = '';
-
-                        if (route.legs) {
-                            const distance = route.legs[0].distance.text;
-                            const duration = route.legs[0].duration.text;
-                            console.log(route.legs[0].distance.text)
-                            console.log(route.legs[0].duration.text)
-                            subtitle = distance + " | " + duration;
-                        }
-
-                        text = route.summary;
-
-                        const card = new builder.HeroCard(session)
-                            .title(`${from} 〜 ${to}`)
-                            .subtitle(subtitle)
-                            .text(text)
-                            .images([
-                                builder.CardImage.create(session, imageURL)
-                            ])
-                            .buttons([
-                                builder.CardAction.openUrl(session, url, '地図を開く')
-                            ]);
-
-                        const cardMsg = new builder.Message(session).addAttachment(card);
-                        session.send(cardMsg);
-                    } else {
-                        session.send("申し訳ありません。ルートを探すことができませんでした。");
-                        session.beginDialog('/getText');
-                    }
-                })
-                .catch((err) => {
-                    console.log(err);
-                });
-
-        }).catch(error => {
-            console.log(error);
-            session.send('申し訳ありません。もう一度入力してください。');
-            session.beginDialog('/getText');
-        });
+bot.dialog('/firstChoice', [
+    (session, results, next) => {
+        builder.Prompts.choice(session, "何をお探しですか。", firstChoices, { listStyle: 3 });
+    },
+    (session, results, next) => {
+        const entity = results.response.entity;
+        const val = firstChoices[entity].value;
+        switch (val) {
+            case 'lastTrain':
+                session.beginDialog('/getLastTrain');
+                break;
+            case 'fromHomeToWork':
+                session.beginDialog('/getDirection');
+                break;
+            case 'others':
+                session.beginDialog('/getSentence');
+                break;
+                // default:
+                //     break;
+        }
+        console.log(results.response.entity)
     }
 ]);
 
@@ -208,6 +251,6 @@ bot.dialog('/endDialog', [
 bot.dialog('/', [
     session => {
         session.send("ボットが自動でお答えします。");
-        session.beginDialog('/getText');
+        session.beginDialog('/firstChoice');
     }
 ]);
